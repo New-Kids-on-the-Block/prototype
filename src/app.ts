@@ -16,16 +16,23 @@ interface Node {
     socket: Net.Socket;
 }
 
+interface TransactionConfirmation {
+    nodeId: string,
+    requestedTime: Date,
+    confirmedTime?: Date
+}
+
 interface Transaction {
     id: string,
     time: Date,
     from: string,
     to: string,
-    amount: number
+    amount: number,
+    confirmations?: TransactionConfirmation[]
 }
 
 interface BlockData {
-    id: string,
+    nodeId: string,
     prevId?: string;
     transactions: Transaction[];
 }
@@ -33,13 +40,14 @@ interface BlockData {
 class Block {
     private static readonly Limit = 1000;
 
-    private _block: BlockData = {
-        id: uuid(),
-        transactions: []
-    };
+    private _block: BlockData;
 
-    constructor(prevId?: string) {
-        this._block.prevId = prevId;
+    constructor(nodeId: string, prevId?: string) {
+        this._block = {
+            nodeId: nodeId,
+            prevId: prevId,
+            transactions: []
+        };
     }
 
     public isFull(): boolean {
@@ -64,21 +72,38 @@ class Block {
         return transaction;
     }
 
+    public addTransactions(transactions: Transaction[]): void {
+        this._block.transactions.concat(transactions);
+    }
+
+    public getUnfonfirmedTransactions(): Transaction[] {
+        return this._block.transactions.filter(t =>
+            !t.confirmations || t.confirmations.every(c => !c.confirmedTime));
+    }
+
+    public getPendingTransactions(): Transaction[] {
+        return this._block.transactions.filter(t =>
+            !!t.confirmations && t.confirmations.every(c => !c.confirmedTime));
+    }
+
     public toJSON(): string {
         return JSON.stringify(this._block);
     }
 }
 
 enum MessageType {
-    Heartbeat = "heartbeat"
+    Heartbeat = "heartbeat",
+    Transactions = "transactions",
 }
 
 interface Message {
     type: MessageType,
     time: Date,
-    dest: string
+    sourceNodeId: string,
+    transactions?: Transaction[]
 }
 
+const block = new Block(`127.0.0.1:${port}`);
 const nodes: Node[] = [];
 const server = Net.createServer((serverSocket) => {
     const node = {
@@ -98,30 +123,25 @@ const server = Net.createServer((serverSocket) => {
         const message: Message = JSON.parse(data.toString());
         console.log(`Server Received: ${message.type} at ${message.time} from ${node.id}.`);
 
-        if (message.type === MessageType.Heartbeat) {
-            const message: Message = {
-                type: MessageType.Heartbeat,
-                time: new Date(),
-                dest: node.id
-            };
-
-            serverSocket.write(Buffer.from(JSON.stringify(message)));
+        let returnMessageType: MessageType;
+        switch (message.type) {
+            case MessageType.Heartbeat:
+                returnMessageType = MessageType.Heartbeat;
+                break;
+            case MessageType.Transactions:
+                returnMessageType = MessageType.Transactions;
+                console.log(`Syncing ${message.transactions.length} transactions...`);
+                console.log(`Sync complete.`);
+                break;
+            default:
+                break;
         }
 
-        // while (true) {
-        //     const message: Message = {
-        //         type: MessageType.Heartbeat,
-        //         time: new Date(),
-        //         dest: node.id
-        //     };
-
-        //     serverSocket.write(Buffer.from(JSON.stringify(message)));
-        //     await waitAsync(5000);
-
-        //     if (serverSocket.destroyed) {
-        //         break;
-        //     }
-        // }
+        serverSocket.write(Buffer.from(JSON.stringify({
+            type: returnMessageType,
+            time: new Date(),
+            sourceNodeId: `127.0.0.1:${port}`
+        })));
     });
 
     serverSocket.on("error", (error) => {
@@ -142,6 +162,8 @@ const peerNodes = [
     { ip: "127.0.0.1", port: 60003 },
     { ip: "127.0.0.1", port: 60004 }];
 
+const clientSockets: Net.Socket[] = [];
+
 // clients on receive broadcast, update/merge the data and send confirmation
 // connect to peer nodes
 peerNodes.forEach((node) => {
@@ -152,33 +174,99 @@ peerNodes.forEach((node) => {
     const clientSocket = new Net.Socket();
     clientSocket.on("connect", async () => {
         console.log(`Connected to ${node.ip}:${node.port}.`);
+        clientSockets.push(clientSocket);
 
-        while (!clientSocket.destroyed) {
-            const message: Message = {
-                type: MessageType.Heartbeat,
-                time: new Date(),
-                dest: `${node.ip}:${node.port}`,
-            };
+        const message: Message = {
+            type: MessageType.Heartbeat,
+            time: new Date(),
+            sourceNodeId: `127.0.0.1:${port}`,
+        };
 
-            clientSocket.write(Buffer.from(JSON.stringify(message)));
-            await waitAsync(5000);
-        }
+        clientSocket.write(Buffer.from(JSON.stringify(message)));
     });
 
     clientSocket.on("error", async (error) => {
-        console.log(`Error with connection ${node.ip}:${node.port}. Connecting again in 10s...`);
+        // console.log(`Error with connection ${node.ip}:${node.port}. Connecting again in 10s...`);
         await waitAsync(10000);
         clientSocket.connect(node.port, node.ip);
     });
 
-    clientSocket.on("data", (data) => {
+    clientSocket.on("data", async (data) => {
         const message = JSON.parse(data.toString());
         console.log(`Client Received: ${message.type} at ${message.time} from ${node.ip}:${node.port}.`);
+
+        switch (message.type) {
+            case MessageType.Heartbeat:
+                await waitAsync(10000);
+                const returnMessage: Message = {
+                    type: MessageType.Heartbeat,
+                    time: new Date(),
+                    sourceNodeId: `127.0.0.1:${port}`,
+                };
+
+                clientSocket.write(Buffer.from(JSON.stringify(returnMessage)));
+                break;
+            case MessageType.Transactions:
+                const pendingTransactions = block.getPendingTransactions();
+                pendingTransactions.forEach(t => {
+                    const pendingConfirmation = t.confirmations.find(c => c.nodeId === message.sourceNodeId);
+                    pendingConfirmation.confirmedTime = message.time;
+                });
+                break;
+            default:
+                break;
+        }
     });
 
     clientSocket.on("close", () => {
-        console.log(`Connection closed from ${node.ip}:${node.port}.`);
+        // console.log(`Connection closed from ${node.ip}:${node.port}.`);
+        clientSockets.splice(clientSockets.indexOf(clientSocket), 1);
     });
 
     clientSocket.connect(node.port, node.ip);
 });
+
+(async () => {
+    block.addTransaction("avalopas", "aval501", 100);
+
+    while (true) {
+        await waitAsync(1000);
+        
+        const unconfirmedTransactions = block.getUnfonfirmedTransactions();
+        if (unconfirmedTransactions.length === 0 ||
+            (unconfirmedTransactions.length > 0 && block.getPendingTransactions().length > 0) ||
+            clientSockets.length === 0) {
+            continue;
+        }
+
+        console.log(`Sending ${unconfirmedTransactions.length} transactions confirmation request...`);
+        clientSockets.forEach((clientSocket) => {
+            if (clientSocket.destroyed) {
+                console.log(`Connection not established with ${clientSocket.remoteAddress}:${clientSocket.remotePort}.`);
+                return;
+            }
+
+            const message: Message = {
+                type: MessageType.Transactions,
+                time: new Date(),
+                sourceNodeId: `127.0.0.1:${port}`,
+                transactions: unconfirmedTransactions
+            };
+
+            clientSocket.write(Buffer.from(JSON.stringify(message)));
+            unconfirmedTransactions.forEach(t => {
+                if (!t.confirmations) {
+                    t.confirmations = [{
+                        nodeId: `${clientSocket.remoteAddress}:${clientSocket.remotePort}`,
+                        requestedTime: new Date()
+                    }];
+                } else {
+                    t.confirmations.push({
+                        nodeId: `${clientSocket.remoteAddress}:${clientSocket.remotePort}`,
+                        requestedTime: new Date()
+                    });
+                }
+            });
+        });
+    }
+})();
