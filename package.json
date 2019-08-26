@@ -13,7 +13,9 @@
     "build": "tsc",
     "watch": "tsc -w"
   },
-  "dependencies": {},
+  "dependencies": {
+    "uuid": "^3.3.3"
+  },
   "devDependencies": {
     "@types/async": "^3.0.0",
     "@types/bcrypt-nodejs": "^0.0.30",
@@ -44,6 +46,7 @@
     "@types/socket.io": "^2.1.2",
     "@types/socket.io-client": "^1.4.32",
     "@types/supertest": "^2.0.7",
+    "@types/uuid": "^3.4.5",
     "@types/winston": "^2.3.9",
     "@typescript-eslint/eslint-plugin": "^1.12.0",
     "@typescript-eslint/parser": "^1.12.0",

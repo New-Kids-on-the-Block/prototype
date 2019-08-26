@@ -1,4 +1,6 @@
 import Net from "net";
+import uuid from "uuid/v4";
+
 let port = 60001;
 
 if (process.argv.length >= 3) {
@@ -14,7 +16,68 @@ interface Node {
     socket: Net.Socket;
 }
 
-// node should have 1 server broadcasting to n, 5, clients about any update.
+interface Transaction {
+    id: string,
+    time: Date,
+    from: string,
+    to: string,
+    amount: number
+}
+
+interface BlockData {
+    id: string,
+    prevId?: string;
+    transactions: Transaction[];
+}
+
+class Block {
+    private static readonly Limit = 1000;
+
+    private _block: BlockData = {
+        id: uuid(),
+        transactions: []
+    };
+
+    constructor(prevId?: string) {
+        this._block.prevId = prevId;
+    }
+
+    public isFull(): boolean {
+        return this._block.transactions.length >= Block.Limit;
+    }
+
+    public addTransaction(from: string, to: string, amount: number): Transaction {
+        let transaction: Transaction;
+        if (this.isFull()) {
+            return undefined;
+        }
+
+        transaction = {
+            id: uuid(),
+            time: new Date(),
+            from: from,
+            to: to,
+            amount: amount
+        };
+
+        this._block.transactions.push(transaction);
+        return transaction;
+    }
+
+    public toJSON(): string {
+        return JSON.stringify(this._block);
+    }
+}
+
+enum MessageType {
+    Heartbeat = "heartbeat"
+}
+
+interface Message {
+    type: MessageType,
+    time: Date,
+    dest: string
+}
 
 const nodes: Node[] = [];
 const server = Net.createServer((serverSocket) => {
@@ -32,15 +95,33 @@ const server = Net.createServer((serverSocket) => {
     });
 
     serverSocket.on("data", async (data) => {
-        console.log(`Data received: ${data}`);
-        while (true) {
-            serverSocket.write(`ping from ${port}`);
-            await waitAsync(5000);
+        const message: Message = JSON.parse(data.toString());
+        console.log(`Server Received: ${message.type} at ${message.time} from ${node.id}.`);
 
-            if (serverSocket.destroyed) {
-                break;
-            }
+        if (message.type === MessageType.Heartbeat) {
+            const message: Message = {
+                type: MessageType.Heartbeat,
+                time: new Date(),
+                dest: node.id
+            };
+
+            serverSocket.write(Buffer.from(JSON.stringify(message)));
         }
+
+        // while (true) {
+        //     const message: Message = {
+        //         type: MessageType.Heartbeat,
+        //         time: new Date(),
+        //         dest: node.id
+        //     };
+
+        //     serverSocket.write(Buffer.from(JSON.stringify(message)));
+        //     await waitAsync(5000);
+
+        //     if (serverSocket.destroyed) {
+        //         break;
+        //     }
+        // }
     });
 
     serverSocket.on("error", (error) => {
@@ -63,16 +144,25 @@ const peerNodes = [
 
 // clients on receive broadcast, update/merge the data and send confirmation
 // connect to peer nodes
-
 peerNodes.forEach((node) => {
     if (node.port === port) {
         return;
     }
 
     const clientSocket = new Net.Socket();
-    clientSocket.on("connect", () => {
-        console.log(`Connected.`);
-        clientSocket.write(`Hello, server! Love, Client.`);
+    clientSocket.on("connect", async () => {
+        console.log(`Connected to ${node.ip}:${node.port}.`);
+
+        while (!clientSocket.destroyed) {
+            const message: Message = {
+                type: MessageType.Heartbeat,
+                time: new Date(),
+                dest: `${node.ip}:${node.port}`,
+            };
+
+            clientSocket.write(Buffer.from(JSON.stringify(message)));
+            await waitAsync(5000);
+        }
     });
 
     clientSocket.on("error", async (error) => {
@@ -82,8 +172,8 @@ peerNodes.forEach((node) => {
     });
 
     clientSocket.on("data", (data) => {
-        console.log(`Received: ${data}`);
-        // client.destroy();
+        const message = JSON.parse(data.toString());
+        console.log(`Client Received: ${message.type} at ${message.time} from ${node.ip}:${node.port}.`);
     });
 
     clientSocket.on("close", () => {
