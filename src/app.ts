@@ -54,6 +54,10 @@ class Block {
         return this._block.transactions.length >= Block.Limit;
     }
 
+    public getTransactionCount() {
+        return this._block.transactions.length;
+    }
+
     public addTransaction(from: string, to: string, amount: number): Transaction {
         let transaction: Transaction;
         if (this.isFull()) {
@@ -72,7 +76,12 @@ class Block {
         return transaction;
     }
 
-    public addTransactions(transactions: Transaction[]): void {
+    public addAndConfirmTransactions(transactions: Transaction[]): void {
+        transactions.map(transaction => {
+            const pendingConfirmation = transaction.confirmations.find(c => c.nodeId === this._block.nodeId);
+            // pendingConfirmation.confirmedTime = new Date();
+        });
+
         this._block.transactions.concat(transactions);
     }
 
@@ -121,7 +130,9 @@ const server = Net.createServer((serverSocket) => {
 
     serverSocket.on("data", async (data) => {
         const message: Message = JSON.parse(data.toString());
-        console.log(`Server Received: ${message.type} at ${message.time} from ${node.id}.`);
+        if (message.type !== MessageType.Heartbeat) {
+            console.log(`Server Received: ${message.type} at ${message.time} from ${node.id}.`);
+        }
 
         let returnMessageType: MessageType;
         switch (message.type) {
@@ -131,6 +142,8 @@ const server = Net.createServer((serverSocket) => {
             case MessageType.Transactions:
                 returnMessageType = MessageType.Transactions;
                 console.log(`Syncing ${message.transactions.length} transactions...`);
+                const transactions = message.transactions;
+                // block.addAndConfirmTransactions(transactions);
                 console.log(`Sync complete.`);
                 break;
             default:
@@ -193,7 +206,9 @@ peerNodes.forEach((node) => {
 
     clientSocket.on("data", async (data) => {
         const message = JSON.parse(data.toString());
-        console.log(`Client Received: ${message.type} at ${message.time} from ${node.ip}:${node.port}.`);
+        if (message.type !== MessageType.Heartbeat) {
+            console.log(`Client Received: ${message.type} at ${message.time} from ${node.ip}:${node.port}.`);
+        }
 
         switch (message.type) {
             case MessageType.Heartbeat:
@@ -230,7 +245,8 @@ peerNodes.forEach((node) => {
     block.addTransaction("avalopas", "aval501", 100);
 
     while (true) {
-        await waitAsync(1000);
+        await waitAsync(10000);
+        console.log(`Transaction counts in the block: ${block.getTransactionCount()}.`);
         
         const unconfirmedTransactions = block.getUnfonfirmedTransactions();
         if (unconfirmedTransactions.length === 0 ||
