@@ -8,22 +8,51 @@ const app = express();
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-const db = new sqlite3.Database("./ledger.db", (error) => {
+const ledgerDb = new sqlite3.Database("./ledger.db", (error) => {
     if (!!error) console.error(error);
 });
 
-db.serialize(() => {
-    console.log(`Creating transaction tables if not already exists...`);
-    db.run(`CREATE TABLE IF NOT EXISTS "pendingTransactions" (
+const appDb = new sqlite3.Database("./app.db", (error) => {
+    if (!!error) console.error(error);
+})
+
+appDb.serialize(() => {
+    console.log(`Creating users table if not already exists...`);
+    appDb.run(`CREATE TABLE IF NOT EXISTS "users" (
+        "id"	        TEXT,
+        "username"	    TEXT UNIQUE,
+        "password"	    TEXT,
+        "createTime"	TEXT NOT NULL,
+        PRIMARY KEY("id"));`);
+    appDb.run(`CREATE UNIQUE INDEX IF NOT EXISTS "usernamePassword" ON "users" ("username", "password");`);
+
+    console.log(`Creating nodes tables if not already exists...`);
+    appDb.run(`CREATE TABLE IF NOT EXISTS "nodes" (
+        "id"	        TEXT,
+        "nodename"	    TEXT UNIQUE,
+        "createTime"	TEXT NOT NULL,
+        "ownerId"	    TEXT NOT NULL,
+        "ip"	        TEXT NOT NULL,
+        "port"	        NUMERIC NOT NULL,
+        "status"	    INTEGER NOT NULL,
+        "lastPulseTime"	TEXT NOT NULL,
+        PRIMARY KEY("id"),
+        FOREIGN KEY("ownerId") REFERENCES "users"("id"));`);
+    appDb.run(`CREATE INDEX IF NOT EXISTS "ownerStatusPulse" ON "nodes" ("owner", "status", "lastPulseTime");`);
+});
+
+ledgerDb.serialize(() => {
+    console.log(`Creating transactions tables if not already exists...`);
+    ledgerDb.run(`CREATE TABLE IF NOT EXISTS "pendingTransactions" (
         "id"	        TEXT,
         "initiateTime"	TEXT NOT NULL,
         "from"	        TEXT NOT NULL,
         "to"	        TEXT NOT NULL,
         "amount"	    NUMERIC NOT NULL,
         PRIMARY KEY("id"));`);
-    db.run(`CREATE UNIQUE INDEX IF NOT EXISTS "timeFromTo" ON "pendingTransactions" ("time", "from", "to" );`);
+    ledgerDb.run(`CREATE UNIQUE INDEX IF NOT EXISTS "timeFromTo" ON "pendingTransactions" ("time", "from", "to" );`);
 
-    db.run(`CREATE TABLE IF NOT EXISTS "transactions" (
+    ledgerDb.run(`CREATE TABLE IF NOT EXISTS "transactions" (
         "id"	        TEXT,
         "initiateTime"  TEXT NOT NULL,
         "from"	        TEXT,
@@ -32,9 +61,9 @@ db.serialize(() => {
         "requestTime"   TEXT NOT NULL,
         "confirmTime"   TEXT NOT NULL,
         PRIMARY KEY("id"));`);
-    db.run(`CREATE UNIQUE INDEX IF NOT EXISTS "timeFromTo" ON "transactions" ("time", "from", "to" );`);
+    ledgerDb.run(`CREATE UNIQUE INDEX IF NOT EXISTS "timeFromTo" ON "transactions" ("time", "from", "to" );`);
 
-    db.run(`CREATE TABLE IF NOT EXISTS "confirmationDetails" (
+    ledgerDb.run(`CREATE TABLE IF NOT EXISTS "confirmationDetails" (
         "confirmTime"   TEXT NOT NULL,
         "transactionId" TEXT NOT NULL,
         "requestNodeId" TEXT NOT NULL,
@@ -42,14 +71,14 @@ db.serialize(() => {
         PRIMARY KEY("confirmTime", "transactionId", "requestNodeId", "confirmNodeId"));`);
 
     console.log(`Adding the first transaction if the ledger is empty.`);
-    db.each(`SELECT COUNT(*) FROM transactions;`, (error, row) => {
+    ledgerDb.each(`SELECT COUNT(*) FROM transactions;`, (error, row) => {
         const totalTransactions = row["COUNT(*)"];
         if (totalTransactions > 0) {
             console.log(`Transaction not empty, first transaction not needed.`);
             return;
         }
 
-        db.run(`INSERT INTO transactions VALUES (
+        ledgerDb.run(`INSERT INTO transactions VALUES (
             "${uuid()}",
             "${new Date().toISOString()}",
             NULL,
@@ -70,7 +99,7 @@ async function getBalanceAsync(username: string): Promise<{ amount: number }> {
         let receiveAmount = 0;
         let sendAmount = 0;
 
-        db.each(
+        ledgerDb.each(
             `SELECT sum(t1.amount) as "receiveAmount",
             (SELECT sum(t2.amount) from transactions t2 WHERE "from" = "${username}") as "sendAmount"
             from transactions t1 WHERE "to" = "${username}";`,
@@ -96,7 +125,7 @@ async function getTransactionsAsync(username: string, limit: number, fromTime?: 
     return new Promise<any[]>((resolve, reject) => {
         const rows: any[] = [];
         // console.log(query);
-        db.each(`SELECT * from transactions WHERE "from" = "${username}" or "to" = "${username}"
+        ledgerDb.each(`SELECT * from transactions WHERE "from" = "${username}" or "to" = "${username}"
                 ORDER BY confirmTime DESC LIMIT ${limit};`,
             (error, row) => {
                 rows.push(row);
@@ -127,7 +156,7 @@ async function postTrasactionAsync(from: string, to: string, amount: number): Pr
             return;
         }
 
-        db.run(`INSERT INTO transactions VALUES (
+        ledgerDb.run(`INSERT INTO transactions VALUES (
             "${uuid()}",
             "${new Date().toISOString()}",
             "${from}",
@@ -146,7 +175,14 @@ async function postTrasactionAsync(from: string, to: string, amount: number): Pr
     });
 }
 
-app.get("/info/:username", async (req, res) => {
+app.get("/nodes", async (req, res) => {
+    res.json({
+        total: 10,
+        activeNodes: []
+    });
+});
+
+app.get("/users/:username", async (req, res) => {
     const username = !req.params.username ? "system" : req.params.username;
     const balance = await getBalanceAsync(username);
     const transactions = await getTransactionsAsync(username, 100);
