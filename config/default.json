@@ -1,0 +1,13 @@
+{
+    "app": {
+        "gatewayUri": "http://127.0.0.1:60000",
+        "port": 60000,
+        "secret": "create account post dog cat foo boo lalaland christmas halloween party yes"
+    },
+    "node": {
+        "ownerId": "aval501",
+        "id": "firstnode",
+        "ip": "127.0.0.1",
+        "port": 60001
+    }
+}

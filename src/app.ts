@@ -3,6 +3,11 @@ import uuid from "uuid/v4";
 import sqlite3 from "sqlite3";
 import express from "express";
 import bodyParser from "body-parser";
+import config from "config";
+import crypto from "crypto";
+
+const appConfig: any = config.get("app");
+const nodeConfig: any = config.get("node");
 
 const app = express();
 app.use(bodyParser.json());
@@ -17,28 +22,52 @@ const appDb = new sqlite3.Database("./app.db", (error) => {
 })
 
 appDb.serialize(() => {
-    console.log(`Creating users table if not already exists...`);
-    appDb.run(`CREATE TABLE IF NOT EXISTS "users" (
+    console.log(`Creating accounts table if not already exists...`);
+    appDb.run(`CREATE TABLE IF NOT EXISTS "accounts" (
         "id"	        TEXT,
-        "username"	    TEXT UNIQUE,
         "password"	    TEXT,
         "createTime"	TEXT NOT NULL,
         PRIMARY KEY("id"));`);
-    appDb.run(`CREATE UNIQUE INDEX IF NOT EXISTS "usernamePassword" ON "users" ("username", "password");`);
+    appDb.run(`CREATE UNIQUE INDEX IF NOT EXISTS "idPassword" ON "accounts" ("id", "password");`);
+
+    console.log(`Adding the system account if the accounts is empty.`);
+    appDb.each(`SELECT COUNT(*) as count FROM "accounts";`, (error, row) => {
+        const accountsCount = row["count"];
+        if (accountsCount > 0) {
+            console.log(`Accounts is not empty, system account not needed.`);
+            return;
+        }
+
+        appDb.run(`INSERT INTO "accounts" VALUES ("system", NULL, "${new Date().toISOString()}");`);
+    });
 
     console.log(`Creating nodes tables if not already exists...`);
     appDb.run(`CREATE TABLE IF NOT EXISTS "nodes" (
         "id"	        TEXT,
-        "nodename"	    TEXT UNIQUE,
         "createTime"	TEXT NOT NULL,
-        "ownerId"	    TEXT NOT NULL,
+        "accountId"	    TEXT NOT NULL,
         "ip"	        TEXT NOT NULL,
         "port"	        NUMERIC NOT NULL,
-        "status"	    INTEGER NOT NULL,
-        "lastPulseTime"	TEXT NOT NULL,
+        "status"	    TEXT NOT NULL,
+        "lastPulseTime"	TEXT,
         PRIMARY KEY("id"),
-        FOREIGN KEY("ownerId") REFERENCES "users"("id"));`);
-    appDb.run(`CREATE INDEX IF NOT EXISTS "ownerStatusPulse" ON "nodes" ("owner", "status", "lastPulseTime");`);
+        FOREIGN KEY("accountId") REFERENCES "accounts"("id"));`);
+    appDb.run(`CREATE INDEX IF NOT EXISTS "accountStatusPulse" ON "nodes" ("accountId", "status", "lastPulseTime");`);
+
+    console.log(`Adding as new a new node if the node ip, port doesn't exist.`);
+    appDb.each(`SELECT COUNT(*) as count FROM "nodes" WHERE "id" = "${nodeConfig.id}" AND
+                "ip" = "${nodeConfig.ip}" AND "port" = "${nodeConfig.port}";`, (error, row) => {
+            const nodesCount = row["count"];
+            if (nodesCount > 0) {
+                console.log(`Node: ${nodeConfig.id}:${nodeConfig.ip}:${nodeConfig.port} already exists.`);
+                return;
+            }
+
+            appDb.run(`INSERT INTO "nodes" VALUES (
+            "${nodeConfig.id}", "${new Date().toISOString()}",
+            "${nodeConfig.ownerId}", "${nodeConfig.ip}", ${nodeConfig.port},
+            "inactive", NULL);`);
+        });
 });
 
 ledgerDb.serialize(() => {
@@ -46,11 +75,11 @@ ledgerDb.serialize(() => {
     ledgerDb.run(`CREATE TABLE IF NOT EXISTS "pendingTransactions" (
         "id"	        TEXT,
         "initiateTime"	TEXT NOT NULL,
-        "from"	        TEXT NOT NULL,
+        "from"          TEXT NOT NULL,
         "to"	        TEXT NOT NULL,
         "amount"	    NUMERIC NOT NULL,
         PRIMARY KEY("id"));`);
-    ledgerDb.run(`CREATE UNIQUE INDEX IF NOT EXISTS "timeFromTo" ON "pendingTransactions" ("time", "from", "to" );`);
+    ledgerDb.run(`CREATE INDEX IF NOT EXISTS "timeFrom" ON "pendingTransactions" ("initiatedTime", "from");`);
 
     ledgerDb.run(`CREATE TABLE IF NOT EXISTS "transactions" (
         "id"	        TEXT,
@@ -61,7 +90,8 @@ ledgerDb.serialize(() => {
         "requestTime"   TEXT NOT NULL,
         "confirmTime"   TEXT NOT NULL,
         PRIMARY KEY("id"));`);
-    ledgerDb.run(`CREATE UNIQUE INDEX IF NOT EXISTS "timeFromTo" ON "transactions" ("time", "from", "to" );`);
+    ledgerDb.run(`CREATE INDEX IF NOT EXISTS "timeFrom" ON "transactions" ("initiatedTime", "from");`);
+    ledgerDb.run(`CREATE INDEX IF NOT EXISTS "timeTo" ON "transactions" ("initiatedTime", "to");`);
 
     ledgerDb.run(`CREATE TABLE IF NOT EXISTS "confirmationDetails" (
         "confirmTime"   TEXT NOT NULL,
@@ -92,8 +122,8 @@ ledgerDb.serialize(() => {
     onLedgerInitialized(app);
 });
 
-async function getBalanceAsync(username: string): Promise<{ amount: number }> {
-    username = username.toLowerCase();
+async function getBalanceAsync(id: string): Promise<{ amount: number }> {
+    id = id.toLowerCase();
 
     return new Promise((resolve, reject) => {
         let receiveAmount = 0;
@@ -101,8 +131,8 @@ async function getBalanceAsync(username: string): Promise<{ amount: number }> {
 
         ledgerDb.each(
             `SELECT sum(t1.amount) as "receiveAmount",
-            (SELECT sum(t2.amount) from transactions t2 WHERE "from" = "${username}") as "sendAmount"
-            from transactions t1 WHERE "to" = "${username}";`,
+            (SELECT sum(t2.amount) from transactions t2 WHERE "from" = "${id}") as "sendAmount"
+            from transactions t1 WHERE "to" = "${id}";`,
             (error, row) => {
                 if (!!row["receiveAmount"]) receiveAmount = row["receiveAmount"];
                 if (!!row["sendAmount"]) sendAmount = row["sendAmount"];
@@ -119,13 +149,46 @@ async function getBalanceAsync(username: string): Promise<{ amount: number }> {
     });
 }
 
-async function getTransactionsAsync(username: string, limit: number, fromTime?: Date, toTime?: Date): Promise<any[]> {
-    username = username.toLowerCase();
-
-    return new Promise<any[]>((resolve, reject) => {
+async function getAccountsAsync(limit: number): Promise<any[]> {
+    return new Promise((resolve, reject) => {
         const rows: any[] = [];
-        // console.log(query);
-        ledgerDb.each(`SELECT * from transactions WHERE "from" = "${username}" or "to" = "${username}"
+        appDb.each(
+            `SELECT id, createTime from accounts ORDER BY createTime DESC LIMIT ${limit};`,
+            (error, row) => {
+                rows.push(row);
+            }, (error) => {
+                if (!!error) {
+                    console.error(error);
+                    reject(error);
+                }
+
+                resolve(rows);
+            });
+    });
+}
+
+async function postAccountAsync(id: string, encryptedPwd: string): Promise<any> {
+    id = id.toLowerCase();
+
+    return new Promise((resolve, reject) => {
+        appDb.run(`INSERT INTO "accounts" VALUES ("${id}", "${encryptedPwd}", "${new Date().toISOString()}");`,
+            async (error) => {
+                if (!!error) {
+                    reject(error);
+                }
+
+                const accounts = await getAccountsAsync(1);
+                resolve(accounts[0]);
+            });
+    });
+}
+
+async function getTransactionsAsync(accountId: string, limit: number, fromTime?: Date, toTime?: Date): Promise<any[]> {
+    accountId = accountId.toLowerCase();
+
+    return new Promise((resolve, reject) => {
+        const rows: any[] = [];
+        ledgerDb.each(`SELECT * from transactions WHERE "from" = "${accountId}" or "to" = "${accountId}"
                 ORDER BY confirmTime DESC LIMIT ${limit};`,
             (error, row) => {
                 rows.push(row);
@@ -140,7 +203,24 @@ async function getTransactionsAsync(username: string, limit: number, fromTime?: 
     });
 }
 
-async function postTrasactionAsync(from: string, to: string, amount: number): Promise<any> {
+async function getPendingTransactionsAsync(): Promise<any[]> {
+    return new Promise((resolve, reject) => {
+        const rows: any[] = [];
+        ledgerDb.each(`SELECT * from "pendingTransactions" ORDER BY initiateTime DESC;`,
+            (error, row) => {
+                rows.push(row);
+            }, (error) => {
+                if (!!error) {
+                    console.error(error);
+                    reject(error);
+                }
+
+                resolve(rows);
+            });
+    });
+}
+
+async function initiateTransactionAsync(from: string, to: string, amount: number): Promise<any> {
     from = from.toLowerCase();
     to = to.toLowerCase();
 
@@ -156,23 +236,28 @@ async function postTrasactionAsync(from: string, to: string, amount: number): Pr
             return;
         }
 
-        ledgerDb.run(`INSERT INTO transactions VALUES (
+        ledgerDb.run(`INSERT INTO "pendingTransactions" VALUES (
             "${uuid()}",
             "${new Date().toISOString()}",
             "${from}",
             "${to}",
-            ${amount},
-            "${new Date().toISOString()}",
-            "${new Date().toISOString()}");`,
+            ${amount});`,
             async (error) => {
                 if (!!error) {
                     reject(error);
                 }
 
-                const transactions = await getTransactionsAsync(from, 1);
-                resolve(transactions[0]);
+                const pendingTransactions = await getPendingTransactionsAsync();
+                resolve(pendingTransactions[0]);
+                onTransactionInitiatedAsync(pendingTransactions);
             });
     });
+}
+
+async function onTransactionInitiatedAsync(transactions: any[]): Promise<void> {
+    if (transactions.length >= 1000) {
+
+    }
 }
 
 app.get("/nodes", async (req, res) => {
@@ -182,13 +267,13 @@ app.get("/nodes", async (req, res) => {
     });
 });
 
-app.get("/users/:username", async (req, res) => {
-    const username = !req.params.username ? "system" : req.params.username;
-    const balance = await getBalanceAsync(username);
-    const transactions = await getTransactionsAsync(username, 100);
+app.get("/accounts/:id", async (req, res) => {
+    const id = !req.params.id ? "system" : req.params.id;
+    const balance = await getBalanceAsync(id);
+    const transactions = await getTransactionsAsync(id, 100);
 
     res.json({
-        username: username,
+        id: id,
         amount: balance.amount,
         recentTransactions: transactions,
     });
@@ -213,13 +298,32 @@ app.get("/transactions", async (req, res) => {
 
 app.post("/transactions", async (req, res) => {
     const from = "system";
-    const transaction = await postTrasactionAsync(from, req.body.to, req.body.amount);
+    const transaction = await initiateTransactionAsync(from, req.body.to, req.body.amount);
     res.json(transaction);
 });
 
+app.get("/accounts", async (req, res) => {
+    const accounts = await getAccountsAsync(10000);
+    res.json(accounts);
+})
+
+app.post("/accounts", async (req, res) => {
+    if (!req.body.id) res.status(400).send({ error: `required property, 'id' is undefined.` });
+    if (!req.body.password) res.status(400).send({ error: `required property, 'password' is undefined.` });
+    else if (req.body.password.length < 6) res.status(400).send({ error: `'password' must be at least 6 characters.` });
+
+    const id = req.body.id;
+    const password = req.body.password;
+    const encryptedPassword = crypto.createHmac('sha256', appConfig.secret).digest("hex");
+
+    const account = await postAccountAsync(id, encryptedPassword);
+    res.json(account);
+});
+
 function onLedgerInitialized(app: any): void {
-    console.log(`Server listing at port: 60000... Try 'localhost:60000/balance'.`);
-    app.listen(60000);
+    console.log(`Server listing at port: ${appConfig.port}...`);
+    console.log(`Try '${nodeConfig.ip}:${appConfig.port}/balance'.`);
+    app.listen(appConfig.port);
 }
 
 // let port = 60001;
