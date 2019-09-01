@@ -122,6 +122,10 @@ ledgerDb.serialize(() => {
     onLedgerInitialized(app);
 });
 
+function waitAsync(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function getBalanceAsync(id: string): Promise<{ amount: number }> {
     id = id.toLowerCase();
 
@@ -249,15 +253,40 @@ async function initiateTransactionAsync(from: string, to: string, amount: number
 
                 const pendingTransactions = await getPendingTransactionsAsync();
                 resolve(pendingTransactions[0]);
-                onTransactionInitiatedAsync(pendingTransactions);
             });
     });
 }
 
-async function onTransactionInitiatedAsync(transactions: any[]): Promise<void> {
-    if (transactions.length >= 1000) {
+async function postTransactionAsync(pendingTransaction: any, requestTime: Date): Promise<any> {
+    return new Promise(async (resolve, reject) => {
+        const balance = await getBalanceAsync(pendingTransaction.from);
+        if (balance.amount < pendingTransaction.amount) {
+            reject({
+                error: {
+                    code: "notEnoughBalance",
+                    message: `Not enough balance, amount requested: ${pendingTransaction.from} > balance: ${balance.amount}.`
+                }
+            });
+            return;
+        }
 
-    }
+        ledgerDb.run(`INSERT INTO "transactions" VALUES (
+            "${pendingTransaction.id}",
+            "${pendingTransaction.initiateTime}",
+            "${pendingTransaction.from}",
+            "${pendingTransaction.to}",
+            ${pendingTransaction.amount},
+            "${requestTime.toISOString()}",
+            "${new Date().toISOString()}");`,
+            async (error) => {
+                if (!!error) {
+                    reject(error);
+                }
+
+                const transaction = await getTransactionsAsync(pendingTransaction.from, 1);
+                resolve(transaction[0]);
+            });
+    });
 }
 
 app.get("/nodes", async (req, res) => {
@@ -299,7 +328,18 @@ app.get("/transactions", async (req, res) => {
 app.post("/transactions", async (req, res) => {
     const from = "system";
     const transaction = await initiateTransactionAsync(from, req.body.to, req.body.amount);
+
+    await waitAsync(2000);
+
     res.json(transaction);
+});
+
+const pendingTransactions: any[][] = [];
+app.post("/transactions/sync", async (req, res) => {
+    const transactions = req.body;
+    pendingTransactions.push(transactions);
+
+    res.json(transactions);
 });
 
 app.get("/accounts", async (req, res) => {
@@ -611,3 +651,11 @@ function onLedgerInitialized(app: any): void {
 //         });
 //     }
 // })();
+
+(async () => {
+    while (true) {
+        await waitAsync(2000);
+        const pendingTransactions = await getPendingTransactionsAsync();
+        console.log(`node ID: '${nodeConfig.id}', pending transactions: ${pendingTransactions.length}.`);
+    }
+})();
