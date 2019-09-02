@@ -1,12 +1,18 @@
 import Block from "./block";
-import * as server from "./server";
+import * as node from "./node";
 import * as common from "./common";
-import { Db } from "mongodb";
 
+/**
+ * The node gets general information from the gateway node. Any node can be the gateway node after gaining enough respect.
+ * On sync request from child nodes, the node queue up the changes to be applied on the sync interval.
+ * On the sync interval, process the queued up changes, drop the conflicts, process local changes, drop the conflicts.
+ * Then requested to every active peer nodes - double round process, then complete the sync.
+ * Authentication will be delegated/maintained in gateway nodes - common nodes only keep ledger.
+ */
 (async () => {
-    console.log(`Getting current block from the gateway server or create new ledger...`);
+    console.log(`Getting current block from the gateway node or create new ledger...`);
     const block = await Block.getCurrentBlockAsync();
-    server.listen();
+    node.listen();
 
     // main block sync loop
     while (common.appContext.isRunning) {
@@ -28,5 +34,5 @@ import { Db } from "mongodb";
 
     console.log(`Closing app...`);
     Block.close();
-    server.close();
+    node.close();
 })();

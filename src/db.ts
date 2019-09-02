@@ -198,6 +198,24 @@ export async function postAccountAsync(id: string, encryptedPwd: string): Promis
     });
 }
 
+export async function getTransactionAsync(id: string): Promise<any> {
+    return new Promise((resolve, reject) => {
+        const rows: any[] = [];
+        ledger.each(`SELECT * from transactions WHERE "id" = "${id}"`, (error, row) => {
+            rows.push(row);
+        }, (error) => {
+            if (!!error) {
+                console.error(error);
+                reject(error);
+            }
+
+            const transaction: any = rows.length === 1 ? rows[0] : undefined;
+            if (!transaction) console.warn(`Transaction with id ${id}, not found.`);
+
+            resolve(transaction);
+        });
+    });
+}
 export async function getTransactionsAsync(accountId: string, limit: number, fromTime?: Date, toTime?: Date): Promise<any[]> {
     accountId = accountId.toLowerCase();
 
@@ -269,33 +287,35 @@ export async function initiateTransactionAsync(from: string, to: string, amount:
     });
 }
 
-export async function postTransactionAsync(pendingTransaction: any, requestTime: Date): Promise<any> {
+export async function postTransactionAsync(confirmedTransaction: any): Promise<any> {
     return new Promise(async (resolve, reject) => {
-        const balance = await getBalanceAsync(pendingTransaction.from);
-        if (balance.amount < pendingTransaction.amount) {
+        const balance = await getBalanceAsync(confirmedTransaction.from);
+        if (balance.amount < confirmedTransaction.amount) {
+            console.error(`Transaction cannot be posted due to not enough balance.`);
             reject({
                 error: {
                     code: "notEnoughBalance",
-                    message: `Not enough balance, amount requested: ${pendingTransaction.from} > balance: ${balance.amount}.`
+                    message: `Not enough balance, amount requested: ${confirmedTransaction.from} > balance: ${balance.amount}.`
                 }
             });
+
             return;
         }
 
         ledger.run(
             `INSERT INTO "transactions" VALUES (
-            "${pendingTransaction.id}",
-            "${pendingTransaction.initiateTime}",
-            "${pendingTransaction.from}",
-            "${pendingTransaction.to}",
-            ${pendingTransaction.amount},
-            "${requestTime.toISOString()}",
-            "${new Date().toISOString()}");`, async (error) => {
+            "${confirmedTransaction.id}",
+            "${confirmedTransaction.initiateTime}",
+            "${confirmedTransaction.from}",
+            "${confirmedTransaction.to}",
+            ${confirmedTransaction.amount},
+            "${confirmedTransaction.requestTime}",
+            "${confirmedTransaction.confirmTime}");`, async (error) => {
                 if (!!error) {
                     reject(error);
                 }
 
-                const transaction = await getTransactionsAsync(pendingTransaction.from, 1);
+                const transaction = await getTransactionAsync(confirmedTransaction.id);
                 resolve(transaction[0]);
             });
     });
@@ -316,7 +336,7 @@ export async function postNodeAsync(
     id: string, accountId: string, ip: string, port: number): Promise<any> {
     return new Promise(async (resolve, reject) => {
         data.run(
-        `INSERT INTO "nodes" VALUES (
+            `INSERT INTO "nodes" VALUES (
             "${id}",
             "${new Date().toISOString()}",
             "${accountId}",
@@ -325,14 +345,14 @@ export async function postNodeAsync(
             "active",
             "${new Date().toISOString()}"
         );`, async (error) => {
-            if (!!error) {
-                console.error(error);
-            }
+                if (!!error) {
+                    console.error(error);
+                }
 
-            const nodes = await getNodesAsync(1);
-            assert(nodes[0].id === id);
-            resolve(nodes[0]);
-        });
+                const nodes = await getNodesAsync(1);
+                assert(nodes[0].id === id);
+                resolve(nodes[0]);
+            });
     });
 }
 
@@ -347,7 +367,7 @@ let pending: {
 export async function syncAsync(nodeId: string, syncData: any): Promise<any> {
     return new Promise(async (resolve, reject) => {
         pending[nodeId] = syncData;
-        
+
         let elapsedTime = 0;
         const nodes = await getNodesAsync();
         while (Object.keys(pending).length < nodes.length && elapsedTime < 5000) {
