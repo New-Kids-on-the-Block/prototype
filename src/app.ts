@@ -1,37 +1,32 @@
-import Net from "net";
-import uuid from "uuid/v4";
-import sqlite3 from "sqlite3";
-import config from "config";
-import crypto from "crypto";
 import Block from "./block";
 import * as server from "./server";
-import * as helper from "./helper";
-
-const appContext = {
-    isRunning: true,
-    syncThrottleTime: 2000,
-    config: {
-        app: config.get<any>("app"),
-        node: config.get<any>("node")
-    }
-};
+import * as common from "./common";
+import { Db } from "mongodb";
 
 (async () => {
     console.log(`Getting current block from the gateway server or create new ledger...`);
-    const block = await Block.getCurrentBlockAsync(appContext);
-    server.listen(appContext);
+    const block = await Block.getCurrentBlockAsync();
+    server.listen();
 
     // main block sync loop
-    while (appContext.isRunning) {
+    while (common.appContext.isRunning) {
         const syncPromise = block.syncAsync();
         
         const promises = await Promise.all([
-            helper.waitAsync(appContext.syncThrottleTime),
+            common.waitAsync(common.appContext.syncThrottleTime),
             syncPromise
         ]);
 
+        const node = common.appContext.config.node;    
         const blockInfo = await syncPromise;
-        if (!!blockInfo)
-            console.log(`node ID: '${appContext.config.node.id}', transactions: ${blockInfo.totalTransactions}, last TID: ${blockInfo.lastTransactionId}.`);
+
+        let transCount = (!blockInfo) ? `NA` : blockInfo.totalTransactions;
+        let lastTransactionId = (!blockInfo) ? `NA` : blockInfo.lastTransactionId;
+        
+        console.log(`node ID: '${node.id}', transactions: ${transCount}, last TID: ${lastTransactionId}.`);
     }
+
+    console.log(`Closing app...`);
+    Block.close();
+    server.close();
 })();
