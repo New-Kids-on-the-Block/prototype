@@ -72,7 +72,7 @@ app.post("/transactions", async (req, res) => {
         res.json(transaction);
         return;
     }
-        
+
     res.status(400).send(`'amount', ${amount}, must be smaller or equal to the blanace: ${balance.amount}.`);
 });
 
@@ -80,10 +80,14 @@ app.post("/transactions", async (req, res) => {
  * Transactions confirm request set, loop through all and apply without 'confirmTime' set.
  * Respond to the client where it can set 'confirmTime', and make 2nd /confirm request.
  */
-app.post("/transactions/confirm", async (req, res) => {
+app.post("/transactions/confirm/request", async (req, res) => {
     // /confirm should go through some extra authorization and validation
-    const block = await Block.getBlockAsync();
     const pendingTransactions: any[] = req.body;
+    if (pendingTransactions.some(t => !!t.confirmTime || !t.initiateTime || !t.requestTime)) {
+        res.status(400).send(`'initiateTime' and 'requestTime', but not 'confirmTime' required for all transactions.`);
+    }
+
+    const block = await Block.getBlockAsync();
     const validTransactions: any[] = [];
     const invalidTransactions: any[] = [];
 
@@ -97,10 +101,43 @@ app.post("/transactions/confirm", async (req, res) => {
     }
 
     block.queueTransactions(validTransactions);
+
     res.json({
         queueds: validTransactions,
         invalids: invalidTransactions
     });
+});
+
+app.post("/transactions/confirm", async (req, res) => {
+    // /confirm should go through some extra authorization and validation
+    const pendingTransactions: any[] = req.body;
+    if (pendingTransactions.some(t => !t.confirmTime || !t.initiateTime || !t.requestTime)) {
+        res.status(400).send(`'initiateTime', 'requestTime', AND 'confirmTime' required for all entries.`);
+    }
+
+    const block = await Block.getBlockAsync();
+    const validTransactions: any[] = [];
+    const invalidTransactions: any[] = [];
+
+    for (const transaction of pendingTransactions) {
+        const balance = await db.getBalanceAsync(transaction.from);
+        if (balance.amount >= transaction.amount) {
+            validTransactions.push(transaction);
+        } else {
+            invalidTransactions.push(transaction);
+        }
+    }
+
+    block.queueTransactions(validTransactions);
+    const result = await block.waitConfirmTransactionsAsync(validTransactions, 30000);
+    if (!result.error) {
+        res.status(500).send(`Confirmation taking longer than 30s, please check again later...`);
+    } else {
+        res.json({
+            queueds: validTransactions,
+            invalids: invalidTransactions
+        });
+    }
 });
 
 app.get("/balance", async (req, res) => {

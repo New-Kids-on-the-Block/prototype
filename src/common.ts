@@ -2,7 +2,7 @@ import config from "config";
 
 export const appContext = {
     isRunning: true,
-    syncThrottleTime: 4000,
+    syncThrottleTime: 1000,
     config: {
         app: config.get<any>("app"),
         node: config.get<any>("node")

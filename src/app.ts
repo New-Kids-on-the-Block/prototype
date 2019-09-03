@@ -17,7 +17,6 @@ import * as common from "./common";
     // main block sync loop
     while (common.appContext.isRunning) {
         const syncPromise = block.syncLedgerAsync();
-        
         const promises = await Promise.all([
             common.waitAsync(common.appContext.syncThrottleTime),
             syncPromise

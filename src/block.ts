@@ -71,6 +71,30 @@ export default class Block {
         }
     }
 
+    public async waitConfirmTransactionsAsync(transactions: any[], timeout: number): Promise<{ error?: any }> {
+        let elapsedTime = 0;
+        const confirmedTransactions = [];
+        const pendingTransactions = [...transactions];
+        
+        while (elapsedTime < timeout || confirmedTransactions.length === transactions.length) {
+            await common.waitAsync(500);
+            elapsedTime += 500;
+
+            let t: any;
+            while (t = pendingTransactions.pop()) {
+                const found = await db.getTransactionAsync(t.id);
+                if (!found) confirmedTransactions.push(t);
+                else pendingTransactions.push(t);
+            }
+        }
+
+        if (elapsedTime > timeout) {
+            return { error: true };
+        } else {
+            return { error: false };
+        }
+    }
+
     /**
      * Loops queued transactions, if exists already check, log, and skip or report.
      * For pending transactions, group them and send for confirmations.
@@ -81,8 +105,6 @@ export default class Block {
         const confirmRequested: any[] = [];
         const confirmed: any[] = [];
         const failed: any[] = [];
-
-        // console.log(this.transactionsQueue);
 
         let t: any;
         while (t = this.transactionsQueue.pop()) {
@@ -142,16 +164,16 @@ export default class Block {
         });
 
         for (const node of activeNodes) {
-            const promise = axios.post(`http://${node.ip}:${node.port}/transactions/confirm`, pendingTransactions);
+            const promise = axios.post(`http://${node.ip}:${node.port}/transactions/confirm/request`, pendingTransactions);
             confirmCheckPromises.push(promise);
         }
 
-        const confirmResponses = await Promise.all(confirmCheckPromises);
+        const confirmCheckResponses = await Promise.all(confirmCheckPromises);
         console.log(`Checking confirmation result...`);
 
         const confirmedTransactions = [];
-        for (const response of confirmResponses) {
-            const nodeUri = response.headers;
+        for (const response of confirmCheckResponses) {
+            const confirmUri = response.config.url;
             const queueds: any[] = response.data.queueds;
             const invalids: any[] = response.data.invalids;
             for (const ct of queueds) {
@@ -164,7 +186,7 @@ export default class Block {
                 if (pt.from === ct.from && pt.to === ct.to && pt.amount === ct.amount &&
                     pt.initiateTime === ct.initiateTime && pt.requestTime === ct.requestTime) {
 
-                    confirmDetails.confirmations.push(nodeUri);
+                    confirmDetails.confirmations.push(confirmUri);
                     if (confirmDetails.confirmations.length >= activeNodes.length) {
                         ct.confirmTime = new Date().toISOString();
                         confirmedTransactions.push(ct);
@@ -181,7 +203,14 @@ export default class Block {
             confirmPromises.push(promise);
         }
 
-        await confirmPromises;
+        const confirmResponses = await confirmPromises;
+        if (confirmResponses.every(async c => (await c).status === 200)) {
+            console.log(`Confirmation verified in all requested nodes, ${confirmResponses.length}. Storing details...`);
+            for (const tid in confirmationsMap) {
+                const confirmations = confirmationsMap[tid].confirmations;
+                // await db.postConfirmationsAsync(tid, confirmations);
+            }
+        }
     }
 
     // public isFull(): boolean {

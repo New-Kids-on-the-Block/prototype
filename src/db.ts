@@ -322,6 +322,10 @@ export async function postTransactionAsync(confirmedTransaction: any): Promise<a
     });
 }
 
+export async function postConfirmationsAsync(id: string, confirmedNodes: any[]): Promise<void> {
+    throw `Not implemented yet`;
+}
+
 export async function getNodesAsync(limit: number = 10000): Promise<any[]> {
     return new Promise(async (resolve, reject) => {
         const nodes: any[] = [];
