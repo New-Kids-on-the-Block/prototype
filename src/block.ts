@@ -28,127 +28,160 @@ interface BlockData {
     transactions: Transaction[];
 }
 
-interface BlockInfo {
-    totalTransactions: number;
-    lastTransactionId: string;
+interface SyncResult {
+    total: number,
+    initiatedTransactions: any[],
+    requestedTransactions: any[],
+    confirmedTransactions: any[],
+    failedTransactions: any[]
 }
 
 export default class Block {
     private static readonly Limit = 1000;
+    private static instance: Block;
 
-    private readonly queue: {
-        transactions: any[],
-        accounts: any[],
-        nodes: any[]
-    } = {
-            transactions: [],
-            accounts: [],
-            nodes: []
-        };
+    private readonly transactionsQueue: any[] = [];
+    private queue: any[] = [];
 
     public static close() {
         db.close();
     }
 
-    public static async getCurrentBlockAsync(): Promise<Block> {
-        const block = new Block();
-        const blockInfo = await block.syncAsync();
-        if (!blockInfo) {
+    public static async getBlockAsync(): Promise<Block> {
+        if (!this.instance) {
+            console.log(`Creating new instance...`);
+            this.instance = new Block();
+            // download ledger from the gateway or
             await db.setupDatabaseAsync();
         }
 
-        return block;
+        return this.instance;
     }
 
     private constructor() {
+    }
+
+    private foo = 0;
+
+    public queueTransactions(transactions: any[]) {
+        for (const t of transactions) {
+            const idx = this.transactionsQueue.findIndex(qt => qt.id === t.id);
+            if (idx >= 0) this.transactionsQueue.splice(idx, 1);
+            this.transactionsQueue.push(t);
+        }
     }
 
     /**
      * Loops queued transactions, if exists already check, log, and skip or report.
      * For pending transactions, group them and send for confirmations.
      */
-    public async syncAsync(): Promise<BlockInfo> {
-        const pendingTransactions = [];
-        for (const queuedTransaction of this.queue.transactions) {
-            let transaction = await db.getTransactionAsync(queuedTransaction.id);
-            if (!!transaction) {
-                console.log(`Transaction ${queuedTransaction.id} already exists. Checking...`);
-                return;
-            }
+    public async syncLedgerAsync(): Promise<SyncResult> {
+        const queuedCount = this.transactionsQueue.length;
+        const initiatedTransactions: any[] = [];
+        const confirmRequested: any[] = [];
+        const confirmed: any[] = [];
+        const failed: any[] = [];
 
-            if (!queuedTransaction.requestTime && !queuedTransaction.confirmTime) {
-                pendingTransactions.push(queuedTransaction);
-            } else if (!!queuedTransaction.requestTime && !!queuedTransaction.confirmTime) {
-                await db.postTransactionAsync(queuedTransaction);
-            } else {
-                console.error(`Impossible - ${queuedTransaction}.`);
-            }
+        // console.log(this.transactionsQueue);
+
+        let t: any;
+        while (t = this.transactionsQueue.pop()) {
+            if (!!t.initiateTime && !t.requestTime && !t.confirmTime) {
+                initiatedTransactions.push(t);
+
+            } else if (!!t.initiateTime && !!t.requestTime && !t.confirmTime) {
+                confirmRequested.push(t);
+
+            } else if (!!t.initiateTime && !!t.requestTime && !!t.confirmTime) {
+                let existingTransaction = await db.getTransactionAsync(t.id);
+                if (!!existingTransaction) {
+                    console.log(`Transaction ${t.id} already exists. Checking...`);
+                    failed.push(t);
+                    continue;
+                }
+
+                console.log(`Posting confirmed transactions to the ledger... ${t.id}`);
+                const result = await db.postTransactionAsync(t);
+                if (!!result) confirmed.push(t);
+                else failed.push(t);
+            } else failed.push(t);
         }
 
-        console.log(`${pendingTransactions.length} pending transactions found, requesting for confirmation...`);
-        await this.requestConfirmationsAsync(pendingTransactions);
+        await this.requestConfirmationsAsync(initiatedTransactions);
+        this.queueTransactions(confirmRequested);
+        this.queueTransactions(initiatedTransactions);
+        this.queueTransactions(failed);
 
-        const blockInfo = {
-            totalTransactions: 100,
-            lastTransactionId: uuid()
+        return {
+            total: queuedCount,
+            initiatedTransactions: initiatedTransactions,
+            requestedTransactions: confirmRequested,
+            confirmedTransactions: confirmed,
+            failedTransactions: failed
         };
-
-        return undefined;
     }
 
     private async requestConfirmationsAsync(pendingTransactions: any[]): Promise<void> {
+        if (!pendingTransactions || pendingTransactions.length === 0) {
+            return;
+        }
+
+        console.log(`${pendingTransactions.length} pending transactions found, requesting for confirmation...`);
         const gatewayUri = common.appContext.config.app.gatewayUri;
         const response = await axios.get<any>(`${gatewayUri}/nodes`);
-        console.log(response.data);
+        const activeNodes = response.data.activeNodes;
 
         const confirmCheckPromises = [];
+        const confirmationsMap: { [transactionId: string]: any } = {};
         pendingTransactions.forEach(pt => {
-            pt.requestTime = new Date();
+            pt.requestTime = new Date().toISOString();
+            confirmationsMap[pt.id] = {
+                transaction: pt,
+                confirmations: []
+            };
         });
 
-        const nodes = response.data.nodes;
-        for (const node of nodes) {
+        for (const node of activeNodes) {
             const promise = axios.post(`http://${node.ip}:${node.port}/transactions/confirm`, pendingTransactions);
             confirmCheckPromises.push(promise);
         }
 
         const confirmResponses = await Promise.all(confirmCheckPromises);
         console.log(`Checking confirmation result...`);
-        const confirmationsMap: { [transactionId: string]: any } = {};
-        for (const transaction of pendingTransactions) {
-            confirmationsMap[transaction.id] = {
-                transaction: transaction,
-                confirmations: []
-            };
-        }
 
         const confirmedTransactions = [];
         for (const response of confirmResponses) {
             const nodeUri = response.headers;
-            const transactions: any[] = response.data;
-            for (const ct of transactions) {
+            const queueds: any[] = response.data.queueds;
+            const invalids: any[] = response.data.invalids;
+            for (const ct of queueds) {
                 const confirmDetails = confirmationsMap[ct.id];
-                const pt = confirmationsMap.transaction;
+                const pt = !confirmDetails ? undefined : confirmDetails.transaction;
+                if (!pt) {
+                    console.error(`Cannot find confirmed transaction in the pending transaction map: ${ct.id}`);
+                }
 
-                if (pt.from === ct.from && pt.to === ct.to === pt.amount === ct.amount &&
+                if (pt.from === ct.from && pt.to === ct.to && pt.amount === ct.amount &&
                     pt.initiateTime === ct.initiateTime && pt.requestTime === ct.requestTime) {
-                    
+
                     confirmDetails.confirmations.push(nodeUri);
-                    if (confirmDetails.confirmations.length >= nodes.length) {
-                        ct.confirmTime = new Date();
+                    if (confirmDetails.confirmations.length >= activeNodes.length) {
+                        ct.confirmTime = new Date().toISOString();
                         confirmedTransactions.push(ct);
                     }
                 } else {
-                    console.error(`In correct transactions received - investigate.`);
+                    console.error(`Incorrect transactions received - investigate.`);
                 }
             }
         }
 
         const confirmPromises = [];
-        for (const node of nodes) {
-            const promise = axios.patch(`http://${node.ip}:${node.port}/transactions/confirm`, pendingTransactions);
+        for (const node of activeNodes) {
+            const promise = axios.post(`http://${node.ip}:${node.port}/transactions/confirm`, confirmedTransactions);
             confirmPromises.push(promise);
         }
+
+        await confirmPromises;
     }
 
     // public isFull(): boolean {

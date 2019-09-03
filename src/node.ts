@@ -4,6 +4,10 @@ import crypto from "crypto";
 import * as db from "./db";
 import * as common from "./common";
 import { Server } from "http";
+import Block from "./block";
+import uuid = require("uuid");
+import assert = require("assert");
+import { blockStatement } from "@babel/types";
 
 const app = express();
 let server: Server;
@@ -50,18 +54,53 @@ app.get("/transactions", async (req, res) => {
 
 app.post("/transactions", async (req, res) => {
     const from = "system";
-    const transaction = await db.initiateTransactionAsync(from, req.body.to, req.body.amount);
+    const to = !req.body.to ? res.status(400).send(`'to' should be specificed.`) : req.body.to;
+    const amount = !req.body.amount ? res.status(400).send(`'amount' should be specificed.`) : req.body.amount;
 
-    res.json(transaction);
+    const block = await Block.getBlockAsync();
+    const transaction = {
+        id: uuid(),
+        from: from,
+        to: to,
+        amount: amount,
+        initiateTime: new Date().toISOString()
+    };
+
+    const balance = await db.getBalanceAsync(transaction.from);
+    if (balance.amount >= transaction.amount) {
+        block.queueTransactions([transaction]);
+        res.json(transaction);
+        return;
+    }
+        
+    res.status(400).send(`'amount', ${amount}, must be smaller or equal to the blanace: ${balance.amount}.`);
 });
 
-app.post("/sync/:nodeId", async (req, res) => {
-    const nodeId = req.params.nodeId;
-    const syncData = req.body;
-    
-    const result = await db.syncAsync(nodeId, syncData);
+/**
+ * Transactions confirm request set, loop through all and apply without 'confirmTime' set.
+ * Respond to the client where it can set 'confirmTime', and make 2nd /confirm request.
+ */
+app.post("/transactions/confirm", async (req, res) => {
+    // /confirm should go through some extra authorization and validation
+    const block = await Block.getBlockAsync();
+    const pendingTransactions: any[] = req.body;
+    const validTransactions: any[] = [];
+    const invalidTransactions: any[] = [];
 
-    res.json(result);
+    for (const transaction of pendingTransactions) {
+        const balance = await db.getBalanceAsync(transaction.from);
+        if (balance.amount >= transaction.amount) {
+            validTransactions.push(transaction);
+        } else {
+            invalidTransactions.push(transaction);
+        }
+    }
+
+    block.queueTransactions(validTransactions);
+    res.json({
+        queueds: validTransactions,
+        invalids: invalidTransactions
+    });
 });
 
 app.get("/balance", async (req, res) => {

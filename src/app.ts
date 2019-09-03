@@ -11,12 +11,12 @@ import * as common from "./common";
  */
 (async () => {
     console.log(`Getting current block from the gateway node or create new ledger...`);
-    const block = await Block.getCurrentBlockAsync();
+    const block = await Block.getBlockAsync();
     node.listen();
 
     // main block sync loop
     while (common.appContext.isRunning) {
-        const syncPromise = block.syncAsync();
+        const syncPromise = block.syncLedgerAsync();
         
         const promises = await Promise.all([
             common.waitAsync(common.appContext.syncThrottleTime),
@@ -24,12 +24,15 @@ import * as common from "./common";
         ]);
 
         const node = common.appContext.config.node;    
-        const blockInfo = await syncPromise;
+        const syncResult = await syncPromise;
 
-        let transCount = (!blockInfo) ? `NA` : blockInfo.totalTransactions;
-        let lastTransactionId = (!blockInfo) ? `NA` : blockInfo.lastTransactionId;
+        const queuedCount = (!syncResult) ? `NA` : syncResult.total;
+        const initCount = (!syncResult) ? `NA` : syncResult.initiatedTransactions.length;
+        const requestedCount = (!syncResult) ? `NA` : syncResult.requestedTransactions.length;
+        const confirmedCount = (!syncResult) ? `NA` : syncResult.confirmedTransactions.length;
+        const failedCount = (!syncResult) ? `NA` : syncResult.failedTransactions.length;
         
-        console.log(`node ID: '${node.id}', transactions: ${transCount}, last TID: ${lastTransactionId}.`);
+        console.log(`Node: '${node.id}', Total: ${queuedCount}, Init: ${initCount}, Req: ${requestedCount}, Confirmed: ${confirmedCount}. Failed: ${failedCount}.`);
     }
 
     console.log(`Closing app...`);
