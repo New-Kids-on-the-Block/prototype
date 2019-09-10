@@ -3,31 +3,6 @@ import * as db from "./db";
 import * as common from "./common";
 import axios from "axios";
 
-interface Node {
-    id: string;
-}
-
-interface TransactionConfirmation {
-    nodeId: string,
-    requestedTime: Date,
-    confirmedTime?: Date
-}
-
-interface Transaction {
-    id: string,
-    time: Date,
-    from: string,
-    to: string,
-    amount: number,
-    confirmations?: TransactionConfirmation[]
-}
-
-interface BlockData {
-    nodeId: string,
-    prevId?: string;
-    transactions: Transaction[];
-}
-
 interface SyncResult {
     total: number,
     initiatedTransactions: any[],
@@ -58,11 +33,6 @@ export default class Block {
         return this.instance;
     }
 
-    private constructor() {
-    }
-
-    private foo = 0;
-
     public queueTransactions(transactions: any[]) {
         for (const t of transactions) {
             const idx = this.transactionsQueue.findIndex(qt => qt.id === t.id);
@@ -75,7 +45,7 @@ export default class Block {
         let elapsedTime = 0;
         const confirmedTransactions = [];
         const pendingTransactions = [...transactions];
-        
+
         while (elapsedTime < timeout || confirmedTransactions.length === transactions.length) {
             await common.waitAsync(500);
             elapsedTime += 500;
@@ -212,53 +182,4 @@ export default class Block {
             }
         }
     }
-
-    // public isFull(): boolean {
-    //     return this._block.transactions.length >= Block.Limit;
-    // }
-
-    // public getTransactionCount() {
-    //     return this._block.transactions.length;
-    // }
-
-    // public addTransaction(from: string, to: string, amount: number): Transaction {
-    //     let transaction: Transaction;
-    //     if (this.isFull()) {
-    //         return undefined;
-    //     }
-
-    //     transaction = {
-    //         id: uuid(),
-    //         time: new Date(),
-    //         from: from,
-    //         to: to,
-    //         amount: amount
-    //     };
-
-    //     this._block.transactions.push(transaction);
-    //     return transaction;
-    // }
-
-    // public addAndConfirmTransactions(transactions: Transaction[]): void {
-    //     transactions.map(transaction => {
-    //         const pendingConfirmation = transaction.confirmations.find(c => c.nodeId === this._block.nodeId);
-    //         // pendingConfirmation.confirmedTime = new Date();
-    //     });
-
-    //     this._block.transactions.concat(transactions);
-    // }
-
-    // public getUnfonfirmedTransactions(): Transaction[] {
-    //     return this._block.transactions.filter(t =>
-    //         !t.confirmations || t.confirmations.every(c => !c.confirmedTime));
-    // }
-
-    // public getPendingTransactions(): Transaction[] {
-    //     return this._block.transactions.filter(t =>
-    //         !!t.confirmations && t.confirmations.every(c => !c.confirmedTime));
-    // }
-
-    // public toJSON(): string {
-    //     return JSON.stringify(this._block);
-    // }
 }

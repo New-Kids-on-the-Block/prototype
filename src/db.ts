@@ -361,35 +361,6 @@ export async function postNodeAsync(
     });
 }
 
-// let pending: {
-//     [nodeId: string]: {
-//         transactions: any[],
-//         accounts: any[],
-//         nodes: any[]
-//     }
-// } = {};
-
-// export async function syncAsync(nodeId: string, syncData: any): Promise<any> {
-//     return new Promise(async (resolve, reject) => {
-//         pending[nodeId] = syncData;
-
-//         let elapsedTime = 0;
-//         const nodes = await getNodesAsync();
-//         while (Object.keys(pending).length < nodes.length && elapsedTime < 5000) {
-//             console.log(`Waiting for more sync requests... ${Object.keys(pending).length}/${nodes.length}...`);
-//             await common.waitAsync(500);
-//             elapsedTime += 500;
-//         }
-
-//         for (nodeId in pending) {
-//             const syncData = pending[nodeId];
-//         }
-
-//         pending = {};
-//         resolve(pending);
-//     });
-// }
-
 export function close(): void {
     ledger.close((error) => {
         if (!!error) console.error(error);
