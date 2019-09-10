@@ -112,19 +112,19 @@ export default class Block {
         };
     }
 
-    private async requestConfirmationsAsync(pendingTransactions: any[]): Promise<void> {
-        if (!pendingTransactions || pendingTransactions.length === 0) {
+    private async requestConfirmationsAsync(initiatedTransactions: any[]): Promise<void> {
+        if (!initiatedTransactions || initiatedTransactions.length === 0) {
             return;
         }
 
-        console.log(`${pendingTransactions.length} pending transactions found, requesting for confirmation...`);
+        console.log(`${initiatedTransactions.length} transactions initiated, requesting for confirmation...`);
         const gatewayUri = common.appContext.config.app.gatewayUri;
         const response = await axios.get<any>(`${gatewayUri}/nodes`);
         const activeNodes = response.data.activeNodes;
 
         const confirmCheckPromises = [];
         const confirmationsMap: { [transactionId: string]: any } = {};
-        pendingTransactions.forEach(pt => {
+        initiatedTransactions.forEach(pt => {
             pt.requestTime = new Date().toISOString();
             confirmationsMap[pt.id] = {
                 transaction: pt,
@@ -133,7 +133,7 @@ export default class Block {
         });
 
         for (const node of activeNodes) {
-            const promise = axios.post(`http://${node.ip}:${node.port}/transactions/confirm/request`, pendingTransactions);
+            const promise = axios.post(`http://${node.ip}:${node.port}/transactions/confirm/request`, initiatedTransactions);
             confirmCheckPromises.push(promise);
         }
 
@@ -147,13 +147,13 @@ export default class Block {
             const invalids: any[] = response.data.invalids;
             for (const ct of queueds) {
                 const confirmDetails = confirmationsMap[ct.id];
-                const pt = !confirmDetails ? undefined : confirmDetails.transaction;
-                if (!pt) {
-                    console.error(`Cannot find confirmed transaction in the pending transaction map: ${ct.id}`);
+                const it = !confirmDetails ? undefined : confirmDetails.transaction;
+                if (!it) {
+                    console.error(`Cannot find confirmed transaction in the initiated transaction map: ${ct.id}`);
                 }
 
-                if (pt.from === ct.from && pt.to === ct.to && pt.amount === ct.amount &&
-                    pt.initiateTime === ct.initiateTime && pt.requestTime === ct.requestTime) {
+                if (it.from === ct.from && it.to === ct.to && it.amount === ct.amount &&
+                    it.initiateTime === ct.initiateTime && it.requestTime === ct.requestTime) {
 
                     confirmDetails.confirmations.push(confirmUri);
                     if (confirmDetails.confirmations.length >= activeNodes.length) {
@@ -175,8 +175,14 @@ export default class Block {
         const confirmResponses = await confirmPromises;
         if (confirmResponses.every(async c => (await c).status === 200)) {
             console.log(`Confirmation verified in all requested nodes, ${confirmResponses.length}. Storing details...`);
+
             for (const tid in confirmationsMap) {
+                const confirmedTransaction = confirmationsMap.transaction;
+                const queuedTransaction = this.queue.find(t => t.id === tid);
+                queuedTransaction.confirmTime = confirmedTransaction.confirmTime;
+
                 const confirmations = confirmationsMap[tid].confirmations;
+                console.log(confirmationsMap[tid]);
                 // await db.postConfirmationsAsync(tid, confirmations);
             }
         }
