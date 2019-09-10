@@ -6,8 +6,6 @@ import * as common from "./common";
 import { Server } from "http";
 import Block from "./block";
 import uuid = require("uuid");
-import assert = require("assert");
-import { blockStatement } from "@babel/types";
 
 const app = express();
 let server: Server;

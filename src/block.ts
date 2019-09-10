@@ -1,4 +1,3 @@
-import uuid from "uuid/v4";
 import * as db from "./db";
 import * as common from "./common";
 import axios from "axios";

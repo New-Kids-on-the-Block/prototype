@@ -1,7 +1,6 @@
 import sqlite3 from "sqlite3";
 import uuid from "uuid/v4";
 import * as common from "./common";
-import { Db } from "mongodb";
 import assert = require("assert");
 
 const ledger = new sqlite3.Database("./ledger.db", (error) => {
